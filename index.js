@@ -14,10 +14,17 @@ const DEFAULT_REWARD = 100; // نقاط كل اشتراك
 const FIRST_CHANNELS = ["@Fileslyzerox1", "@lyzerox1"];
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://earn-money-up24.onrender.com";
 const AD_REWARD = 5; // نقاط كل إعلان (خليها أقل من دخلك الحقيقي من الإعلان)
-const AD_LIMIT = 7; // عدد الإعلانات المسموح لكل مستخدم
+const AD_LIMIT = 20; // عدد الإعلانات المسموح لكل مستخدم
 const AD_WINDOW_HOURS = 6; // خلال كم ساعة
 const TADS_WIDGET_ID = process.env.TADS_WIDGET_ID || "12988";
 const TADS_SECRET = process.env.TADS_SECRET || ""; // مفتاح سري للـ Webhook
+
+// العجلة اليومية: كل لفة تسبقها مشاهدة إعلان
+const WHEEL_SLICES = [2, 3, 5, 5, 8, 10, 15, 25]; // نقاط كل خانة
+const WHEEL_WEIGHTS = [30, 25, 15, 10, 8, 6, 4, 2]; // احتمال كل خانة (المتوسط ≈ 5 نقاط)
+const WHEEL_DAILY = 3; // عدد اللفات كل 24 ساعة
+const SPIN_WAIT_MIN = 5; // مهلة انتظار مكافأة الإعلان بعد بدء اللفة
+const WITHDRAW_NETWORKS = ["TRC20", "BEP20", "ERC20", "TON"]; // شبكات السحب المسموحة
 
 // ====== المتغيرات السرية (من Render) ======
 const token = process.env.BOT_TOKEN;
@@ -40,14 +47,7 @@ const isAdmin = (ctx) => ctx.from && ctx.from.id === ADMIN_ID;
 const backKb = () => new InlineKeyboard().text("⬅️ القائمة الرئيسية", "menu");
 
 function mainMenu() {
-  return new InlineKeyboard()
-    .webApp("🚀 فتح التطبيق", WEBAPP_URL)
-    .row()
-    .text("📋 المهام", "tasks")
-    .text("💰 رصيدي", "balance")
-    .row()
-    .text("🎁 الهدية اليومية", "daily")
-    .text("👥 دعوة الأصدقاء", "invite");
+  return new InlineKeyboard().webApp("🚀 فتح التطبيق", WEBAPP_URL);
 }
 
 // ====== قاعدة البيانات ======
@@ -89,6 +89,17 @@ async function initDb() {
   )`);
   await pool.query(
     "CREATE INDEX IF NOT EXISTS ad_views_user_time ON ad_views (user_id, created_at)"
+  );
+  await pool.query(`CREATE TABLE IF NOT EXISTS spins (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    slice INT,
+    prize INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(
+    "CREATE INDEX IF NOT EXISTS spins_user_status ON spins (user_id, status, created_at)"
   );
   const { rows } = await pool.query("SELECT COUNT(*) FROM tasks");
   if (Number(rows[0].count) === 0) {
@@ -191,6 +202,17 @@ async function recentAds(userId) {
 async function rewardAd(userId) {
   const u = await pool.query("SELECT 1 FROM users WHERE id = $1", [userId]);
   if (!u.rowCount) return { ok: false, reason: "unknown_user" };
+  // لو المستخدم بدأ لفة عجلة، هذا الإعلان يفتح له اللفة بدل مكافأة الإعلان العادية
+  const slice = pickSlice();
+  const sp = await pool.query(
+    `UPDATE spins SET status = 'ready', slice = $2, prize = $3
+     WHERE id = (SELECT id FROM spins WHERE user_id = $1 AND status = 'pending'
+                 AND created_at > now() - make_interval(mins => $4)
+                 ORDER BY id DESC LIMIT 1)
+     RETURNING id`,
+    [userId, slice, WHEEL_SLICES[slice], SPIN_WAIT_MIN]
+  );
+  if (sp.rowCount) return { ok: true, spin: true };
   if ((await recentAds(userId)) >= AD_LIMIT) return { ok: false, reason: "limit" };
   await pool.query("INSERT INTO ad_views (user_id) VALUES ($1)", [userId]);
   await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
@@ -198,6 +220,89 @@ async function rewardAd(userId) {
     userId,
   ]);
   return { ok: true };
+}
+
+// BEGIN wheel
+function pickSlice() {
+  const total = WHEEL_WEIGHTS.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < WHEEL_WEIGHTS.length; i++) {
+    r -= WHEEL_WEIGHTS[i];
+    if (r < 0) return i;
+  }
+  return WHEEL_WEIGHTS.length - 1;
+}
+// END wheel
+
+async function spinsToday(userId) {
+  const r = await pool.query(
+    "SELECT COUNT(*) FROM spins WHERE user_id = $1 AND status IN ('ready', 'claimed') AND created_at > now() - interval '24 hours'",
+    [userId]
+  );
+  return Number(r.rows[0].count);
+}
+
+async function startSpin(userId) {
+  const ready = await pool.query(
+    "SELECT 1 FROM spins WHERE user_id = $1 AND status = 'ready' LIMIT 1",
+    [userId]
+  );
+  if (ready.rowCount) return { ok: true, ready: true };
+  if ((await spinsToday(userId)) >= WHEEL_DAILY) {
+    return { ok: false, message: "استنفدت لفات اليوم، ارجع بعد قليل" };
+  }
+  await pool.query("DELETE FROM spins WHERE user_id = $1 AND status = 'pending'", [userId]);
+  await pool.query("INSERT INTO spins (user_id, status) VALUES ($1, 'pending')", [userId]);
+  return { ok: true };
+}
+
+async function cancelSpin(userId) {
+  await pool.query("DELETE FROM spins WHERE user_id = $1 AND status = 'pending'", [userId]);
+}
+
+// يستلم الجائزة وينقلها للرصيد بأمر واحد (ما تنصرف مرتين)
+async function claimSpin(userId) {
+  const r = await pool.query(
+    `WITH c AS (
+       UPDATE spins SET status = 'claimed'
+       WHERE id = (SELECT id FROM spins WHERE user_id = $1 AND status = 'ready' ORDER BY id LIMIT 1)
+         AND status = 'ready'
+       RETURNING slice, prize
+     ), u AS (
+       UPDATE users SET balance = balance + (SELECT prize FROM c)
+       WHERE id = $1 AND EXISTS (SELECT 1 FROM c)
+       RETURNING id
+     )
+     SELECT slice, prize FROM c`,
+    [userId]
+  );
+  return r.rowCount ? r.rows[0] : null;
+}
+
+async function dailyStatus(userId) {
+  const r = await pool.query(
+    "SELECT (last_daily = CURRENT_DATE) AS claimed, EXISTS (SELECT 1 FROM completions WHERE user_id = $1) AS has_task FROM users WHERE id = $1",
+    [userId]
+  );
+  if (!r.rowCount || !r.rows[0].has_task) return "locked";
+  return r.rows[0].claimed ? "claimed" : "ready";
+}
+
+async function claimDaily(userId) {
+  if ((await dailyStatus(userId)) !== "ready") return false;
+  const r = await pool.query(
+    "UPDATE users SET balance = balance + $1, last_daily = CURRENT_DATE WHERE id = $2 AND (last_daily IS NULL OR last_daily < CURRENT_DATE) RETURNING id",
+    [DAILY_GIFT, userId]
+  );
+  return r.rowCount > 0;
+}
+
+async function invitedCount(userId) {
+  const r = await pool.query(
+    "SELECT COUNT(*) FROM users WHERE invited_by = $1 AND referral_paid = true",
+    [userId]
+  );
+  return Number(r.rows[0].count);
 }
 
 function safeEqual(a, b) {
@@ -247,7 +352,7 @@ bot.command("start", async (ctx) => {
       [ref, ctx.from.id]
     );
   }
-  await ctx.reply("أهلاً بك 👋\nاختر من القائمة:", { reply_markup: mainMenu() });
+  await ctx.reply("أهلاً بك 👋\nاضغط الزر لفتح التطبيق:", { reply_markup: mainMenu() });
 });
 
 bot.callbackQuery("menu", async (ctx) => {
@@ -370,12 +475,16 @@ bot.command("cancel", async (ctx) => {
 });
 
 async function createWithdrawal(ctx, wallet) {
+  return createWithdrawalFor(userId, wallet);
+}
+
+async function createWithdrawalFor(userId, wallet) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const u = await client.query(
       "SELECT balance FROM users WHERE id = $1 FOR UPDATE",
-      [ctx.from.id]
+      [userId]
     );
     const pts = Number(u.rows[0].balance);
     if (pts < MIN_WITHDRAW_USDT * POINTS_PER_USDT) {
@@ -384,9 +493,9 @@ async function createWithdrawal(ctx, wallet) {
     }
     const w = await client.query(
       "INSERT INTO withdrawals (user_id, points, wallet) VALUES ($1, $2, $3) RETURNING id",
-      [ctx.from.id, pts, wallet]
+      [userId, pts, wallet]
     );
-    await client.query("UPDATE users SET balance = 0 WHERE id = $1", [ctx.from.id]);
+    await client.query("UPDATE users SET balance = 0 WHERE id = $1", [userId]);
     await client.query("COMMIT");
     return { id: w.rows[0].id, pts };
   } catch (e) {
@@ -395,6 +504,25 @@ async function createWithdrawal(ctx, wallet) {
   } finally {
     client.release();
   }
+}
+
+// طلب سحب من التطبيق المصغر: يسجل الطلب ويرسله لك (الأدمن) للمراجعة
+async function requestWithdrawal(userId, wallet) {
+  const w = await createWithdrawalFor(userId, wallet);
+  if (!w) return null;
+  const usdt = (w.pts / POINTS_PER_USDT).toFixed(2);
+  await bot.api
+    .sendMessage(
+      ADMIN_ID,
+      `💸 طلب سحب #${w.id}\nالمستخدم: ${userId}\nالمبلغ: ${usdt} USDT (${w.pts} نقطة)\nالمحفظة:\n${wallet}`,
+      {
+        reply_markup: new InlineKeyboard()
+          .text("✅ تم الدفع", `wd_ok:${w.id}`)
+          .text("❌ رفض", `wd_no:${w.id}`),
+      }
+    )
+    .catch((e) => console.error("notify admin:", e.message));
+  return w;
 }
 
 bot.callbackQuery(/^wd_(ok|no):(\d+)$/, async (ctx) => {
@@ -552,6 +680,18 @@ const server = http.createServer(async (req, res) => {
           adLimit: AD_LIMIT,
           adHours: AD_WINDOW_HOURS,
           adsLeft: Math.max(0, AD_LIMIT - used),
+          userId: user.id,
+          botUsername: (bot.botInfo && bot.botInfo.username) || "earnusdt18_bot",
+          wheel: WHEEL_SLICES,
+          spinsLeft: Math.max(0, WHEEL_DAILY - (await spinsToday(user.id))),
+          spinsPerDay: WHEEL_DAILY,
+          daily: await dailyStatus(user.id),
+          dailyGift: DAILY_GIFT,
+          inviteBonus: INVITE_BONUS,
+          invited: await invitedCount(user.id),
+          minWithdrawPts: MIN_WITHDRAW_USDT * POINTS_PER_USDT,
+          minWithdrawUsdt: MIN_WITHDRAW_USDT,
+          networks: WITHDRAW_NETWORKS,
         });
       }
       if (req.method === "GET" && pathname === "/api/tasks") {
@@ -562,6 +702,36 @@ const server = http.createServer(async (req, res) => {
         const r = await completeTask(user.id, Number(body.taskId));
         if (r.ok) return sendJson(res, 200, { ok: true, reward: r.reward });
         return sendJson(res, 200, { ok: false, message: TASK_MSG[r.code] });
+      }
+      if (req.method === "POST" && pathname === "/api/daily") {
+        const ok = await claimDaily(user.id);
+        return sendJson(res, 200, ok ? { ok: true, reward: DAILY_GIFT } : { ok: false });
+      }
+      if (req.method === "POST" && pathname === "/api/withdraw") {
+        const body = await readJson(req);
+        const network = String(body.network || "");
+        const address = String(body.address || "").trim();
+        if (!WITHDRAW_NETWORKS.includes(network)) {
+          return sendJson(res, 200, { ok: false, message: "اختر الشبكة" });
+        }
+        if (address.length < 20 || address.length > 100 || /\s/.test(address)) {
+          return sendJson(res, 200, { ok: false, message: "عنوان المحفظة غير صحيح" });
+        }
+        const w = await requestWithdrawal(user.id, network + ": " + address);
+        if (!w) return sendJson(res, 200, { ok: false, message: "رصيدك لا يكفي للسحب" });
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === "POST" && pathname === "/api/spin/start") {
+        if (!TADS_SECRET) return sendJson(res, 200, { ok: false, message: "العجلة غير متاحة الآن" });
+        return sendJson(res, 200, await startSpin(user.id));
+      }
+      if (req.method === "POST" && pathname === "/api/spin/cancel") {
+        await cancelSpin(user.id);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === "POST" && pathname === "/api/spin/claim") {
+        const c = await claimSpin(user.id);
+        return sendJson(res, 200, c ? { ok: true, slice: c.slice, prize: c.prize } : { ok: false });
       }
     }
 
@@ -576,6 +746,11 @@ server.listen(process.env.PORT || 3000);
 initDb()
   .then(() => {
     console.log("قاعدة البيانات جاهزة");
+    bot.api
+      .setChatMenuButton({
+        menu_button: { type: "web_app", text: "🚀 فتح التطبيق", web_app: { url: WEBAPP_URL } },
+      })
+      .catch((e) => console.error("menu button:", e.message));
     bot.start();
   })
   .catch((e) => {

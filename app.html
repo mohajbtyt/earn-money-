@@ -12,61 +12,190 @@
     --text: #e8eef4; --muted: #8a9aa8; --accent: #19d37a; --accent-ink: #04170d;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
+    background: var(--bg); color: var(--text);
     font-family: system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
-    padding: 16px 14px calc(24px + env(safe-area-inset-bottom, 0px));
+    padding: 16px 14px calc(92px + env(safe-area-inset-bottom, 0px));
   }
   h2 { font-size: 15px; margin: 22px 4px 10px; color: var(--muted); font-weight: 600; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 10px; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+
   .balance .label { color: var(--muted); font-size: 13px; }
   .balance .pts { font-size: 34px; font-weight: 800; margin: 4px 0; color: var(--accent); }
   .balance .usdt { color: var(--muted); font-size: 14px; }
   .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; line-height: 1.6; }
-  .task { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-  .task .info { flex: 1; min-width: 0; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row .info { flex: 1; min-width: 0; }
+  .title { font-weight: 700; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
   .task .name { font-weight: 600; direction: ltr; text-align: right; overflow: hidden; text-overflow: ellipsis; }
   .task .reward { color: var(--accent); font-size: 13px; margin-top: 2px; }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0; }
+
   button {
     font: inherit; border: 0; border-radius: 12px; padding: 10px 14px; cursor: pointer;
     background: var(--line); color: var(--text);
   }
   button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  button.big { width: 100%; padding: 14px; font-size: 16px; }
   button:disabled { opacity: .5; cursor: default; }
-  .ad { display: flex; align-items: center; gap: 12px; }
-  .ad .info { flex: 1; }
-  .ad .title { font-weight: 700; }
-  .ad .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
-  .empty { color: var(--muted); text-align: center; padding: 18px 0; }
+
+  /* العجلة */
+  .wheel-wrap { position: relative; width: 280px; height: 280px; margin: 14px auto 18px; }
+  .pointer {
+    position: absolute; top: -8px; left: 50%; transform: translateX(-50%); z-index: 2;
+    width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent;
+    border-top: 24px solid #fff;
+  }
+  .wheel {
+    position: relative; width: 100%; height: 100%; border-radius: 50%;
+    border: 4px solid var(--line); background: var(--line);
+    transition: transform 4.5s cubic-bezier(.12, .6, .1, 1);
+  }
+  .lbl { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+  .lbl span {
+    position: absolute; left: -22px; top: -112px; width: 44px; text-align: center;
+    font-weight: 800; font-size: 16px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+  .hub {
+    position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+    border-radius: 50%; background: var(--bg); border: 3px solid var(--line); z-index: 1;
+  }
+
+  /* الدعوة */
+  .link {
+    direction: ltr; text-align: left; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; font-size: 12.5px; word-break: break-all; color: var(--muted);
+  }
+  .btns { display: flex; gap: 10px; margin-top: 12px; }
+  .btns button { flex: 1; }
+  .stat { font-size: 28px; font-weight: 800; color: var(--accent); }
+
+  select, input[type=text] {
+    width: 100%; margin-top: 12px; padding: 12px; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  }
+  #wdForm button { margin-top: 12px; }
+
+  /* شريط التبويبات */
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex;
+    background: var(--card); border-top: 1px solid var(--line);
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+  .tabbar button {
+    flex: 1; background: none; padding: 6px 2px; border-radius: 10px; color: var(--muted);
+    display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12px;
+  }
+  .tabbar button .ic { font-size: 20px; }
+  .tabbar button.active { color: var(--accent); }
+
   .toast {
-    position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    position: fixed; left: 50%; bottom: calc(86px + env(safe-area-inset-bottom, 0px));
     transform: translateX(-50%); background: #fff; color: #111; padding: 10px 16px;
     border-radius: 12px; font-size: 14px; max-width: 90%; opacity: 0; pointer-events: none;
-    transition: opacity .2s;
+    transition: opacity .2s; z-index: 10; text-align: center;
   }
   .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
 
-<div class="card balance">
-  <div class="label">رصيدك</div>
-  <div class="pts"><span id="pts">…</span> نقطة</div>
-  <div class="usdt">≈ <span id="usdt">…</span> USDT</div>
-  <div class="hint">للسحب افتح البوت واضغط «رصيدي» ثم «سحب».</div>
-</div>
-
-<h2>إعلان</h2>
-<div class="card ad">
-  <div class="info">
-    <div class="title">📺 شاهد إعلان واربح نقاط</div>
-    <div class="sub" id="adSub">قريباً</div>
+<!-- الرئيسية -->
+<section id="tab-home" class="tab active">
+  <div class="card balance">
+    <div class="label">رصيدك</div>
+    <div class="pts"><span id="pts">…</span> نقطة</div>
+    <div class="usdt">≈ <span id="usdt">…</span> USDT</div>
+    <div class="hint">للسحب استخدم بطاقة السحب أدناه.</div>
   </div>
-  <button id="adBtn" disabled>شاهد</button>
-</div>
 
-<h2>المهام</h2>
-<div id="tasks"><div class="empty">جاري التحميل…</div></div>
+  <h2>إعلان</h2>
+  <div class="card row">
+    <div class="info">
+      <div class="title">📺 شاهد إعلان واربح نقاط</div>
+      <div class="sub" id="adSub">…</div>
+    </div>
+    <button id="adBtn" class="primary" disabled>شاهد</button>
+  </div>
+
+  <h2>هدية اليوم</h2>
+  <div class="card row">
+    <div class="info">
+      <div class="title">🎁 الهدية اليومية</div>
+      <div class="sub" id="dailySub">…</div>
+    </div>
+    <button id="dailyBtn" class="primary" disabled>استلم</button>
+  </div>
+
+  <h2>السحب</h2>
+  <div class="card">
+    <div class="row">
+      <div class="info">
+        <div class="title">💸 سحب الأرباح</div>
+        <div class="sub" id="wdSub">…</div>
+      </div>
+      <button id="wdBtn" class="primary" disabled>سحب</button>
+    </div>
+    <div id="wdForm" style="display:none">
+      <select id="wdNet"></select>
+      <input id="wdAddr" type="text" dir="ltr" placeholder="عنوان المحفظة" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="wdSend" class="primary big">تأكيد طلب السحب</button>
+      <div class="hint">سيتم سحب كامل رصيدك، ويُراجع الطلب يدوياً. تأكد من الشبكة والعنوان قبل التأكيد.</div>
+    </div>
+  </div>
+</section>
+
+<!-- المهام -->
+<section id="tab-tasks" class="tab">
+  <h2>المهام</h2>
+  <div id="tasks"><div class="empty">جاري التحميل…</div></div>
+</section>
+
+<!-- العجلة -->
+<section id="tab-wheel" class="tab">
+  <h2>عجلة الحظ</h2>
+  <div class="card">
+    <div class="wheel-wrap">
+      <div class="pointer"></div>
+      <div class="wheel" id="wheel"></div>
+      <div class="hub"></div>
+    </div>
+    <button id="spinBtn" class="primary big" disabled>🎡 لف العجلة</button>
+    <div class="hint" id="spinSub" style="text-align:center">قبل كل لفة يظهر إعلان قصير.</div>
+  </div>
+</section>
+
+<!-- الدعوة -->
+<section id="tab-invite" class="tab">
+  <h2>دعوة الأصدقاء</h2>
+  <div class="card">
+    <div class="sub" style="margin-bottom:8px">رابط الدعوة الخاص بك</div>
+    <div class="link" id="inviteLink">…</div>
+    <div class="btns">
+      <button id="copyBtn">نسخ</button>
+      <button id="shareBtn" class="primary">مشاركة</button>
+    </div>
+    <div class="hint" id="inviteHint"></div>
+  </div>
+  <div class="card row">
+    <div class="info">
+      <div class="sub">أصدقاء أنجزوا أول مهمة</div>
+      <div class="stat" id="invitedNum">0</div>
+    </div>
+  </div>
+</section>
+
+<nav class="tabbar">
+  <button data-tab="home" class="active"><span class="ic">🏠</span>الرئيسية</button>
+  <button data-tab="tasks"><span class="ic">📋</span>المهام</button>
+  <button data-tab="wheel"><span class="ic">🎡</span>العجلة</button>
+  <button data-tab="invite"><span class="ic">👥</span>الدعوة</button>
+</nav>
 
 <div id="toast" class="toast"></div>
 
@@ -74,12 +203,25 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 const initData = tg ? tg.initData : "";
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let currentMe = null;
+let adController = null;
+let adMode = "ad"; // "ad" إعلان عادي، "spin" إعلان قبل لفة العجلة
+let busy = false;
+let wheelBuilt = false;
+let wheelRot = 0;
 
 function toast(msg) {
-  const t = document.getElementById("toast");
+  const t = $("toast");
   t.textContent = msg;
   t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2600);
+  setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+function haptic() {
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
 }
 
 async function api(path, body) {
@@ -93,74 +235,293 @@ async function api(path, body) {
   return data;
 }
 
-let adController = null;
-let currentMe = null;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function releaseBusy(afterMs) {
+  setTimeout(() => { busy = false; }, afterMs);
+}
 
+// ===== التبويبات =====
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + name));
+  document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  window.scrollTo(0, 0);
+  if (name === "tasks") loadTasks().catch(() => toast("تعذر تحميل المهام"));
+}
+document.querySelectorAll(".tabbar button").forEach((b) => {
+  b.onclick = () => showTab(b.dataset.tab);
+});
+
+// ===== عرض بياناتي =====
 function renderMe(me) {
   currentMe = me;
-  document.getElementById("pts").textContent = me.balance;
-  document.getElementById("usdt").textContent = me.usdt;
-  const btn = document.getElementById("adBtn");
-  const sub = document.getElementById("adSub");
+  $("pts").textContent = me.balance;
+  $("usdt").textContent = me.usdt;
+
+  // الإعلان
   if (!me.adsEnabled) {
-    sub.textContent = "قريباً";
-    btn.disabled = true;
-    return;
+    $("adSub").textContent = "غير متاح الآن";
+    $("adBtn").disabled = true;
+  } else if (me.adsLeft > 0) {
+    $("adSub").textContent = "+" + me.adReward + " نقطة للإعلان · المتبقي " + me.adsLeft + " من " + me.adLimit + " كل " + me.adHours + " ساعات";
+    $("adBtn").disabled = false;
+  } else {
+    $("adSub").textContent = "انتهت إعلاناتك الآن، ارجع بعد " + me.adHours + " ساعات";
+    $("adBtn").disabled = true;
   }
-  sub.textContent =
-    "+" + me.adReward + " نقطة · تبقى " + me.adsLeft + " من " + me.adLimit +
-    " كل " + me.adHours + " ساعات";
-  btn.disabled = me.adsLeft <= 0;
-  btn.className = me.adsLeft > 0 ? "primary" : "";
+
+  // الهدية اليومية
+  const d = me.daily;
+  if (d === "ready") {
+    $("dailySub").textContent = "+" + me.dailyGift + " نقطة جاهزة لك";
+    $("dailyBtn").disabled = false;
+  } else if (d === "claimed") {
+    $("dailySub").textContent = "استلمتها اليوم ✅ ارجع بكرة";
+    $("dailyBtn").disabled = true;
+  } else {
+    $("dailySub").textContent = "أنجز مهمة واحدة لتفتح الهدية";
+    $("dailyBtn").disabled = true;
+  }
+
+  // العجلة
+  if (!wheelBuilt) buildWheel(me.wheel);
+  $("spinSub").textContent = me.adsEnabled
+    ? "لفات متبقية: " + me.spinsLeft + " من " + me.spinsPerDay + " كل 24 ساعة · قبل كل لفة يظهر إعلان"
+    : "العجلة غير متاحة الآن";
+  $("spinBtn").disabled = !me.adsEnabled || me.spinsLeft <= 0;
+
+  // السحب
+  if (me.balance >= me.minWithdrawPts) {
+    $("wdSub").textContent = "رصيدك جاهز للسحب (الحد الأدنى " + me.minWithdrawUsdt + " USDT)";
+    $("wdBtn").disabled = false;
+  } else {
+    $("wdSub").textContent = "الحد الأدنى " + me.minWithdrawUsdt + " USDT، باقي لك " + (me.minWithdrawPts - me.balance) + " نقطة";
+    $("wdBtn").disabled = true;
+    $("wdForm").style.display = "none";
+  }
+  if ($("wdNet").options.length === 0) {
+    me.networks.forEach((n) => {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = n;
+      $("wdNet").append(o);
+    });
+  }
+
+  // الدعوة
+  const link = "https://t.me/" + me.botUsername + "?start=" + me.userId;
+  $("inviteLink").textContent = link;
+  $("inviteHint").textContent = "تحصل على " + me.inviteBonus + " نقطة عن كل صديق ينجز أول مهمة.";
+  $("invitedNum").textContent = me.invited;
 }
 
 async function loadMe() {
   renderMe(await api("/api/me"));
 }
 
-// بعد ما ينتهي الإعلان، السيرفر يضيف النقاط عبر Webhook من TADS
+// ===== الإعلان (TADS) =====
+function getAdController() {
+  if (adController) return adController;
+  if (!currentMe || !window.tads || !window.tads.init) return null;
+  adController = window.tads.init({
+    widgetId: currentMe.adWidgetId,
+    type: "fullscreen",
+    debug: false,
+    onShowReward: () => (adMode === "spin" ? onSpinAdWatched() : onAdWatched()),
+    onAdsNotFound: () => {
+      toast("لا يوجد إعلان الآن، حاول لاحقاً");
+      if (adMode === "spin") api("/api/spin/cancel", {}).catch(() => {});
+      busy = false;
+    },
+  });
+  return adController;
+}
+
+// السيرفر يضيف النقاط عبر Webhook من TADS، وهنا ننتظر ونحدّث الرصيد
 async function onAdWatched() {
   const before = currentMe ? currentMe.balance : 0;
   toast("جاري إضافة النقاط…");
   for (let i = 0; i < 8; i++) {
     await sleep(1500);
     try {
-      const me = await api("/api/me");
-      renderMe(me);
-      if (me.balance > before) {
-        toast("+" + (me.balance - before) + " نقطة ✅");
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        return;
+      await loadMe();
+      if (currentMe.balance > before) {
+        toast("+" + (currentMe.balance - before) + " نقطة ✅");
+        haptic();
+        break;
       }
     } catch (e) {}
   }
-  toast("إذا ما انضافت النقاط، ستظهر خلال لحظات");
+  busy = false;
 }
 
-document.getElementById("adBtn").onclick = async () => {
-  if (!currentMe || !window.tads || !window.tads.init) {
-    return toast("تعذر تحميل الإعلان، حاول لاحقاً");
-  }
-  if (!adController) {
-    adController = window.tads.init({
-      widgetId: currentMe.adWidgetId,
-      type: "fullscreen",
-      debug: false,
-      onShowReward: onAdWatched,
-      onAdsNotFound: () => toast("لا يوجد إعلان الآن، حاول لاحقاً"),
-    });
-  }
+$("adBtn").onclick = async () => {
+  if (busy) return;
+  const c = getAdController();
+  if (!c) return toast("تعذر تحميل الإعلان، حاول لاحقاً");
+  busy = true;
+  adMode = "ad";
+  api("/api/spin/cancel", {}).catch(() => {});
+  releaseBusy(120000);
   try {
-    await adController.showAd();
+    await c.showAd();
   } catch (e) {
     toast("لا يوجد إعلان الآن، حاول لاحقاً");
+    busy = false;
   }
 };
 
+// ===== الهدية اليومية =====
+$("dailyBtn").onclick = async () => {
+  $("dailyBtn").disabled = true;
+  try {
+    const r = await api("/api/daily", {});
+    if (r.ok) {
+      toast("🎁 +" + r.reward + " نقطة");
+      haptic();
+    } else {
+      toast("الهدية غير متاحة الآن");
+    }
+    await loadMe();
+  } catch (e) {
+    toast("حدث خطأ، حاول مرة ثانية");
+  }
+};
+
+// ===== العجلة =====
+function buildWheel(slices) {
+  const w = $("wheel");
+  w.replaceChildren();
+  const n = slices.length;
+  const step = 360 / n;
+  const colors = ["#17323f", "#123b2a"];
+  const stops = slices.map((_, i) => colors[i % 2] + " " + i * step + "deg " + (i + 1) * step + "deg");
+  w.style.background = "conic-gradient(" + stops.join(",") + ")";
+  slices.forEach((v, i) => {
+    const l = document.createElement("div");
+    l.className = "lbl";
+    l.style.transform = "rotate(" + (i * step + step / 2) + "deg)";
+    const s = document.createElement("span");
+    s.textContent = v;
+    l.append(s);
+    w.append(l);
+  });
+  wheelBuilt = true;
+}
+
+function animateWheel(index) {
+  const n = currentMe.wheel.length;
+  const step = 360 / n;
+  const center = index * step + step / 2;
+  const base = Math.ceil(wheelRot / 360) * 360;
+  wheelRot = base + 360 * 5 + (360 - center);
+  $("wheel").style.transform = "rotate(" + wheelRot + "deg)";
+}
+
+async function claimAndSpin() {
+  for (let i = 0; i < 10; i++) {
+    try {
+      const r = await api("/api/spin/claim", {});
+      if (r.ok) {
+        animateWheel(r.slice);
+        await sleep(4800);
+        toast("🎉 ربحت +" + r.prize + " نقطة");
+        haptic();
+        await loadMe().catch(() => {});
+        busy = false;
+        return;
+      }
+    } catch (e) {}
+    await sleep(1500);
+  }
+  toast("تأخرت الجائزة، افتح العجلة بعد قليل وستجدها");
+  busy = false;
+}
+
+function onSpinAdWatched() {
+  toast("جاري تجهيز الجائزة…");
+  claimAndSpin();
+}
+
+$("spinBtn").onclick = async () => {
+  if (busy || !currentMe) return;
+  busy = true;
+  releaseBusy(120000);
+  try {
+    const s = await api("/api/spin/start", {});
+    if (!s.ok) {
+      toast(s.message || "تعذر اللف الآن");
+      busy = false;
+      return;
+    }
+    if (s.ready) return claimAndSpin(); // جائزة سابقة جاهزة بدون إعلان
+    const c = getAdController();
+    if (!c) {
+      api("/api/spin/cancel", {}).catch(() => {});
+      toast("تعذر تحميل الإعلان، حاول لاحقاً");
+      busy = false;
+      return;
+    }
+    adMode = "spin";
+    try {
+      await c.showAd();
+    } catch (e) {
+      api("/api/spin/cancel", {}).catch(() => {});
+      toast("لا يوجد إعلان الآن، حاول لاحقاً");
+      busy = false;
+    }
+  } catch (e) {
+    toast("حدث خطأ، حاول مرة ثانية");
+    busy = false;
+  }
+};
+
+// ===== السحب =====
+$("wdBtn").onclick = () => {
+  const f = $("wdForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+};
+$("wdSend").onclick = async () => {
+  const address = $("wdAddr").value.trim();
+  if (!address) return toast("اكتب عنوان المحفظة");
+  $("wdSend").disabled = true;
+  try {
+    const r = await api("/api/withdraw", { network: $("wdNet").value, address });
+    if (r.ok) {
+      toast("✅ تم استلام طلب السحب");
+      haptic();
+      $("wdAddr").value = "";
+      $("wdForm").style.display = "none";
+    } else {
+      toast(r.message || "تعذر إرسال الطلب");
+    }
+    await loadMe();
+  } catch (e) {
+    toast("حدث خطأ، حاول مرة ثانية");
+  }
+  $("wdSend").disabled = false;
+};
+
+// ===== الدعوة =====
+$("copyBtn").onclick = async () => {
+  const link = $("inviteLink").textContent;
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("تم نسخ الرابط ✅");
+  } catch (e) {
+    toast("انسخ الرابط يدوياً من المربع");
+  }
+};
+$("shareBtn").onclick = () => {
+  const link = $("inviteLink").textContent;
+  const text = "اربح نقاط USDT من المهام والإعلانات وعجلة الحظ 🎡";
+  const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(text);
+  if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
+  else window.open(url, "_blank");
+};
+
+// ===== المهام =====
 function taskCard(t) {
   const row = document.createElement("div");
-  row.className = "card task";
+  row.className = "card task row";
 
   const info = document.createElement("div");
   info.className = "info";
@@ -189,8 +550,8 @@ function taskCard(t) {
       const r = await api("/api/check", { taskId: t.id });
       if (r.ok) {
         toast("+" + r.reward + " نقطة ✅");
-        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-        await refresh();
+        haptic();
+        await Promise.all([loadMe(), loadTasks()]);
         return;
       }
       toast(r.message || "تعذر التحقق");
@@ -205,7 +566,7 @@ function taskCard(t) {
 }
 
 async function loadTasks() {
-  const box = document.getElementById("tasks");
+  const box = $("tasks");
   const { tasks } = await api("/api/tasks");
   box.replaceChildren();
   if (!tasks.length) {
@@ -218,18 +579,14 @@ async function loadTasks() {
   tasks.forEach((t) => box.append(taskCard(t)));
 }
 
-async function refresh() {
-  await Promise.all([loadMe(), loadTasks()]);
-}
-
+// ===== البداية =====
 if (!initData) {
-  document.getElementById("tasks").innerHTML = "";
   const e = document.createElement("div");
   e.className = "empty";
   e.textContent = "افتح التطبيق من داخل تيليجرام.";
-  document.getElementById("tasks").append(e);
+  document.body.replaceChildren(e);
 } else {
-  refresh().catch(() => toast("تعذر تحميل البيانات"));
+  loadMe().catch(() => toast("تعذر تحميل البيانات"));
 }
 </script>
 </body>
