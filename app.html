@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Earn USDT</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://w.tads.me/widget.js"></script>
 <style>
   :root {
     --bg: #0a0e13; --card: #121a22; --line: #1e2a35;
@@ -59,7 +60,7 @@
 <div class="card ad">
   <div class="info">
     <div class="title">📺 شاهد إعلان واربح نقاط</div>
-    <div class="sub">قريباً</div>
+    <div class="sub" id="adSub">قريباً</div>
   </div>
   <button id="adBtn" disabled>شاهد</button>
 </div>
@@ -92,11 +93,70 @@ async function api(path, body) {
   return data;
 }
 
-async function loadMe() {
-  const me = await api("/api/me");
+let adController = null;
+let currentMe = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function renderMe(me) {
+  currentMe = me;
   document.getElementById("pts").textContent = me.balance;
   document.getElementById("usdt").textContent = me.usdt;
+  const btn = document.getElementById("adBtn");
+  const sub = document.getElementById("adSub");
+  if (!me.adsEnabled) {
+    sub.textContent = "قريباً";
+    btn.disabled = true;
+    return;
+  }
+  sub.textContent =
+    "+" + me.adReward + " نقطة · تبقى " + me.adsLeft + " من " + me.adLimit +
+    " كل " + me.adHours + " ساعات";
+  btn.disabled = me.adsLeft <= 0;
+  btn.className = me.adsLeft > 0 ? "primary" : "";
 }
+
+async function loadMe() {
+  renderMe(await api("/api/me"));
+}
+
+// بعد ما ينتهي الإعلان، السيرفر يضيف النقاط عبر Webhook من TADS
+async function onAdWatched() {
+  const before = currentMe ? currentMe.balance : 0;
+  toast("جاري إضافة النقاط…");
+  for (let i = 0; i < 8; i++) {
+    await sleep(1500);
+    try {
+      const me = await api("/api/me");
+      renderMe(me);
+      if (me.balance > before) {
+        toast("+" + (me.balance - before) + " نقطة ✅");
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        return;
+      }
+    } catch (e) {}
+  }
+  toast("إذا ما انضافت النقاط، ستظهر خلال لحظات");
+}
+
+document.getElementById("adBtn").onclick = async () => {
+  if (!currentMe || !window.tads || !window.tads.init) {
+    return toast("تعذر تحميل الإعلان، حاول لاحقاً");
+  }
+  if (!adController) {
+    adController = window.tads.init({
+      widgetId: currentMe.adWidgetId,
+      type: "fullscreen",
+      debug: false,
+      onShowReward: onAdWatched,
+      onAdsNotFound: () => toast("لا يوجد إعلان الآن، حاول لاحقاً"),
+    });
+  }
+  try {
+    await adController.showAd();
+  } catch (e) {
+    toast("لا يوجد إعلان الآن، حاول لاحقاً");
+  }
+};
 
 function taskCard(t) {
   const row = document.createElement("div");

@@ -13,6 +13,11 @@ const INVITE_BONUS = 50; // نقاط الدعوة (بعد أول مهمة للم
 const DEFAULT_REWARD = 100; // نقاط كل اشتراك
 const FIRST_CHANNELS = ["@Fileslyzerox1", "@lyzerox1"];
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://earn-money-up24.onrender.com";
+const AD_REWARD = 5; // نقاط كل إعلان (خليها أقل من دخلك الحقيقي من الإعلان)
+const AD_LIMIT = 7; // عدد الإعلانات المسموح لكل مستخدم
+const AD_WINDOW_HOURS = 6; // خلال كم ساعة
+const TADS_WIDGET_ID = process.env.TADS_WIDGET_ID || "12988";
+const TADS_SECRET = process.env.TADS_SECRET || ""; // مفتاح سري للـ Webhook
 
 // ====== المتغيرات السرية (من Render) ======
 const token = process.env.BOT_TOKEN;
@@ -77,6 +82,14 @@ async function initDb() {
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ad_views (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(
+    "CREATE INDEX IF NOT EXISTS ad_views_user_time ON ad_views (user_id, created_at)"
+  );
   const { rows } = await pool.query("SELECT COUNT(*) FROM tasks");
   if (Number(rows[0].count) === 0) {
     for (const ch of FIRST_CHANNELS) {
@@ -163,6 +176,34 @@ async function completeTask(userId, taskId) {
       .catch(() => {});
   }
   return { ok: true, reward: task.reward };
+}
+
+// ====== إعلانات المشاهدة (TADS) ======
+async function recentAds(userId) {
+  const r = await pool.query(
+    "SELECT COUNT(*) FROM ad_views WHERE user_id = $1 AND created_at > now() - make_interval(hours => $2)",
+    [userId, AD_WINDOW_HOURS]
+  );
+  return Number(r.rows[0].count);
+}
+
+// يُستدعى فقط من Webhook الخاص بـ TADS (بعد التأكد من المفتاح السري)
+async function rewardAd(userId) {
+  const u = await pool.query("SELECT 1 FROM users WHERE id = $1", [userId]);
+  if (!u.rowCount) return { ok: false, reason: "unknown_user" };
+  if ((await recentAds(userId)) >= AD_LIMIT) return { ok: false, reason: "limit" };
+  await pool.query("INSERT INTO ad_views (user_id) VALUES ($1)", [userId]);
+  await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
+    AD_REWARD,
+    userId,
+  ]);
+  return { ok: true };
+}
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
 // ====== التحقق من بيانات التطبيق المصغر (initData) ======
@@ -472,11 +513,26 @@ function readJson(req) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    const { pathname } = new URL(req.url, "http://localhost");
+    const url = new URL(req.url, "http://localhost");
+    const pathname = url.pathname;
 
     if (req.method === "GET" && (pathname === "/" || pathname === "/app")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       return res.end(APP_HTML);
+    }
+
+    // Webhook من TADS: يُرسل telegram_id و widget_id بعد مشاهدة الإعلان
+    if (pathname === "/api/tads" && (req.method === "POST" || req.method === "GET")) {
+      if (!TADS_SECRET || !safeEqual(url.searchParams.get("key") || "", TADS_SECRET)) {
+        return sendJson(res, 403, { error: "forbidden" });
+      }
+      const data =
+        req.method === "POST" ? await readJson(req) : Object.fromEntries(url.searchParams);
+      const uid = Number(data.telegram_id);
+      if (!uid || String(data.widget_id) !== TADS_WIDGET_ID) {
+        return sendJson(res, 400, { error: "bad_request" });
+      }
+      return sendJson(res, 200, await rewardAd(uid));
     }
 
     if (pathname.startsWith("/api/")) {
@@ -486,9 +542,16 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === "GET" && pathname === "/api/me") {
         const balance = await getBalance(user.id);
+        const used = await recentAds(user.id);
         return sendJson(res, 200, {
           balance,
           usdt: (balance / POINTS_PER_USDT).toFixed(2),
+          adsEnabled: Boolean(TADS_SECRET),
+          adWidgetId: Number(TADS_WIDGET_ID),
+          adReward: AD_REWARD,
+          adLimit: AD_LIMIT,
+          adHours: AD_WINDOW_HOURS,
+          adsLeft: Math.max(0, AD_LIMIT - used),
         });
       }
       if (req.method === "GET" && pathname === "/api/tasks") {
