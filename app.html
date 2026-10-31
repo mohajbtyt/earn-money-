@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Earn USDT</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0a0e13; --card: #121a22; --line: #1e2a35;
+    --text: #e8eef4; --muted: #8a9aa8; --accent: #19d37a; --accent-ink: #04170d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+    padding: 16px 14px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  h2 { font-size: 15px; margin: 22px 4px 10px; color: var(--muted); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+  .balance .label { color: var(--muted); font-size: 13px; }
+  .balance .pts { font-size: 34px; font-weight: 800; margin: 4px 0; color: var(--accent); }
+  .balance .usdt { color: var(--muted); font-size: 14px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; line-height: 1.6; }
+  .task { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .task .info { flex: 1; min-width: 0; }
+  .task .name { font-weight: 600; direction: ltr; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+  .task .reward { color: var(--accent); font-size: 13px; margin-top: 2px; }
+  button {
+    font: inherit; border: 0; border-radius: 12px; padding: 10px 14px; cursor: pointer;
+    background: var(--line); color: var(--text);
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  button:disabled { opacity: .5; cursor: default; }
+  .ad { display: flex; align-items: center; gap: 12px; }
+  .ad .info { flex: 1; }
+  .ad .title { font-weight: 700; }
+  .ad .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0; }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%); background: #fff; color: #111; padding: 10px 16px;
+    border-radius: 12px; font-size: 14px; max-width: 90%; opacity: 0; pointer-events: none;
+    transition: opacity .2s;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="card balance">
+  <div class="label">رصيدك</div>
+  <div class="pts"><span id="pts">…</span> نقطة</div>
+  <div class="usdt">≈ <span id="usdt">…</span> USDT</div>
+  <div class="hint">للسحب افتح البوت واضغط «رصيدي» ثم «سحب».</div>
+</div>
+
+<h2>إعلان</h2>
+<div class="card ad">
+  <div class="info">
+    <div class="title">📺 شاهد إعلان واربح نقاط</div>
+    <div class="sub">قريباً</div>
+  </div>
+  <button id="adBtn" disabled>شاهد</button>
+</div>
+
+<h2>المهام</h2>
+<div id="tasks"><div class="empty">جاري التحميل…</div></div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const initData = tg ? tg.initData : "";
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "X-Init-Data": initData, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "error");
+  return data;
+}
+
+async function loadMe() {
+  const me = await api("/api/me");
+  document.getElementById("pts").textContent = me.balance;
+  document.getElementById("usdt").textContent = me.usdt;
+}
+
+function taskCard(t) {
+  const row = document.createElement("div");
+  row.className = "card task";
+
+  const info = document.createElement("div");
+  info.className = "info";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = t.channel;
+  const reward = document.createElement("div");
+  reward.className = "reward";
+  reward.textContent = "+" + t.reward + " نقطة";
+  info.append(name, reward);
+
+  const join = document.createElement("button");
+  join.textContent = "اشترك";
+  join.onclick = () => {
+    const url = "https://t.me/" + t.channel.replace("@", "");
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
+    else window.open(url, "_blank");
+  };
+
+  const check = document.createElement("button");
+  check.className = "primary";
+  check.textContent = "تحقق";
+  check.onclick = async () => {
+    check.disabled = true;
+    try {
+      const r = await api("/api/check", { taskId: t.id });
+      if (r.ok) {
+        toast("+" + r.reward + " نقطة ✅");
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        await refresh();
+        return;
+      }
+      toast(r.message || "تعذر التحقق");
+    } catch (e) {
+      toast("حدث خطأ، حاول مرة ثانية");
+    }
+    check.disabled = false;
+  };
+
+  row.append(info, join, check);
+  return row;
+}
+
+async function loadTasks() {
+  const box = document.getElementById("tasks");
+  const { tasks } = await api("/api/tasks");
+  box.replaceChildren();
+  if (!tasks.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "لا توجد مهام جديدة الآن 🎉";
+    box.append(e);
+    return;
+  }
+  tasks.forEach((t) => box.append(taskCard(t)));
+}
+
+async function refresh() {
+  await Promise.all([loadMe(), loadTasks()]);
+}
+
+if (!initData) {
+  document.getElementById("tasks").innerHTML = "";
+  const e = document.createElement("div");
+  e.className = "empty";
+  e.textContent = "افتح التطبيق من داخل تيليجرام.";
+  document.getElementById("tasks").append(e);
+} else {
+  refresh().catch(() => toast("تعذر تحميل البيانات"));
+}
+</script>
+</body>
+</html>

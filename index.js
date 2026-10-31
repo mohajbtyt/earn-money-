@@ -1,4 +1,7 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const { Pool } = require("pg");
 const { Bot, InlineKeyboard } = require("grammy");
 
@@ -9,6 +12,7 @@ const DAILY_GIFT = 20; // نقاط الهدية اليومية
 const INVITE_BONUS = 50; // نقاط الدعوة (بعد أول مهمة للمدعو)
 const DEFAULT_REWARD = 100; // نقاط كل اشتراك
 const FIRST_CHANNELS = ["@Fileslyzerox1", "@lyzerox1"];
+const WEBAPP_URL = process.env.WEBAPP_URL || "https://earn-money-up24.onrender.com";
 
 // ====== المتغيرات السرية (من Render) ======
 const token = process.env.BOT_TOKEN;
@@ -17,6 +21,8 @@ const ADMIN_ID = Number(process.env.ADMIN_ID);
 if (!token) throw new Error("المتغير BOT_TOKEN غير موجود");
 if (!dbUrl) throw new Error("المتغير DATABASE_URL غير موجود");
 if (!ADMIN_ID) throw new Error("المتغير ADMIN_ID غير موجود");
+
+const APP_HTML = fs.readFileSync(path.join(__dirname, "app.html"), "utf8");
 
 const pool = new Pool({
   connectionString: dbUrl.split("?")[0],
@@ -30,6 +36,8 @@ const backKb = () => new InlineKeyboard().text("⬅️ القائمة الرئي
 
 function mainMenu() {
   return new InlineKeyboard()
+    .webApp("🚀 فتح التطبيق", WEBAPP_URL)
+    .row()
     .text("📋 المهام", "tasks")
     .text("💰 رصيدي", "balance")
     .row()
@@ -80,15 +88,112 @@ async function initDb() {
   }
 }
 
+async function ensureUser(from) {
+  const r = await pool.query(
+    "INSERT INTO users (id, username) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING RETURNING id",
+    [from.id, from.username || null]
+  );
+  return r.rowCount > 0;
+}
+
+// ====== منطق مشترك بين البوت والتطبيق ======
+async function getOpenTasks(userId) {
+  const { rows } = await pool.query(
+    `SELECT t.id, t.channel, t.reward FROM tasks t
+     WHERE t.active AND NOT EXISTS (
+       SELECT 1 FROM completions c WHERE c.task_id = t.id AND c.user_id = $1
+     ) ORDER BY t.id`,
+    [userId]
+  );
+  return rows;
+}
+
+async function getBalance(userId) {
+  const { rows } = await pool.query("SELECT balance FROM users WHERE id = $1", [userId]);
+  return rows.length ? Number(rows[0].balance) : 0;
+}
+
+const TASK_MSG = {
+  unavailable: "المهمة غير متاحة",
+  verify_failed: "تعذر التحقق الآن، حاول لاحقاً",
+  not_member: "لم تشترك بعد ❌",
+  done: "أخذت مكافأة هذه المهمة من قبل",
+};
+
+async function completeTask(userId, taskId) {
+  const { rows } = await pool.query("SELECT * FROM tasks WHERE id = $1 AND active", [taskId]);
+  if (!rows.length) return { ok: false, code: "unavailable" };
+  const task = rows[0];
+
+  let member;
+  try {
+    member = await bot.api.getChatMember(task.channel, userId);
+  } catch (e) {
+    console.error("getChatMember:", e.message);
+    return { ok: false, code: "verify_failed" };
+  }
+  if (!["member", "administrator", "creator"].includes(member.status)) {
+    return { ok: false, code: "not_member" };
+  }
+
+  const ins = await pool.query(
+    "INSERT INTO completions (user_id, task_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
+    [userId, taskId]
+  );
+  if (!ins.rowCount) return { ok: false, code: "done" };
+
+  await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
+    task.reward,
+    userId,
+  ]);
+
+  // مكافأة الدعوة: مرة واحدة فقط، بعد أول مهمة للمدعو
+  const inv = await pool.query(
+    "UPDATE users SET referral_paid = true WHERE id = $1 AND invited_by IS NOT NULL AND referral_paid = false RETURNING invited_by",
+    [userId]
+  );
+  if (inv.rowCount) {
+    const inviter = inv.rows[0].invited_by;
+    await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
+      INVITE_BONUS,
+      inviter,
+    ]);
+    bot.api
+      .sendMessage(inviter, `🎉 صديق دعوته أنجز أول مهمة، أخذت ${INVITE_BONUS} نقطة`)
+      .catch(() => {});
+  }
+  return { ok: true, reward: task.reward };
+}
+
+// ====== التحقق من بيانات التطبيق المصغر (initData) ======
+// BEGIN verify
+function verifyInitData(initData, botToken) {
+  if (!initData) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+  const dataCheck = [...params.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  const calc = crypto.createHmac("sha256", secret).update(dataCheck).digest("hex");
+  if (calc.length !== hash.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(calc), Buffer.from(hash))) return null;
+  const authDate = Number(params.get("auth_date"));
+  if (!authDate || Date.now() / 1000 - authDate > 86400) return null;
+  try {
+    return JSON.parse(params.get("user"));
+  } catch (e) {
+    return null;
+  }
+}
+// END verify
+
 // تسجيل المستخدم تلقائياً عند أي تفاعل
 bot.use(async (ctx, next) => {
-  if (ctx.from) {
-    const r = await pool.query(
-      "INSERT INTO users (id, username) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING RETURNING id",
-      [ctx.from.id, ctx.from.username || null]
-    );
-    ctx.isNew = r.rowCount > 0;
-  }
+  if (ctx.from) ctx.isNew = await ensureUser(ctx.from);
   await next();
 });
 
@@ -111,13 +216,7 @@ bot.callbackQuery("menu", async (ctx) => {
 
 // ====== المهام ======
 async function showTasks(ctx) {
-  const { rows } = await pool.query(
-    `SELECT t.id, t.channel, t.reward FROM tasks t
-     WHERE t.active AND NOT EXISTS (
-       SELECT 1 FROM completions c WHERE c.task_id = t.id AND c.user_id = $1
-     ) ORDER BY t.id`,
-    [ctx.from.id]
-  );
+  const rows = await getOpenTasks(ctx.from.id);
   if (!rows.length) {
     return ctx.reply("لا توجد مهام جديدة الآن 🎉\nارجع لاحقاً.", {
       reply_markup: backKb(),
@@ -142,71 +241,17 @@ bot.callbackQuery("tasks", async (ctx) => {
 });
 
 bot.callbackQuery(/^check:(\d+)$/, async (ctx) => {
-  const taskId = Number(ctx.match[1]);
-  const { rows } = await pool.query(
-    "SELECT * FROM tasks WHERE id = $1 AND active",
-    [taskId]
-  );
-  if (!rows.length) {
-    return ctx.answerCallbackQuery({ text: "المهمة غير متاحة", show_alert: true });
+  const r = await completeTask(ctx.from.id, Number(ctx.match[1]));
+  if (!r.ok) {
+    return ctx.answerCallbackQuery({ text: TASK_MSG[r.code], show_alert: true });
   }
-  const task = rows[0];
-
-  let member;
-  try {
-    member = await ctx.api.getChatMember(task.channel, ctx.from.id);
-  } catch (e) {
-    console.error("getChatMember:", e.message);
-    return ctx.answerCallbackQuery({
-      text: "تعذر التحقق الآن، حاول لاحقاً",
-      show_alert: true,
-    });
-  }
-  if (!["member", "administrator", "creator"].includes(member.status)) {
-    return ctx.answerCallbackQuery({ text: "لم تشترك بعد ❌", show_alert: true });
-  }
-
-  const ins = await pool.query(
-    "INSERT INTO completions (user_id, task_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id",
-    [ctx.from.id, taskId]
-  );
-  if (!ins.rowCount) {
-    return ctx.answerCallbackQuery({
-      text: "أخذت مكافأة هذه المهمة من قبل",
-      show_alert: true,
-    });
-  }
-  await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
-    task.reward,
-    ctx.from.id,
-  ]);
-
-  // مكافأة الدعوة: مرة واحدة فقط، بعد أول مهمة للمدعو
-  const inv = await pool.query(
-    "UPDATE users SET referral_paid = true WHERE id = $1 AND invited_by IS NOT NULL AND referral_paid = false RETURNING invited_by",
-    [ctx.from.id]
-  );
-  if (inv.rowCount) {
-    const inviter = inv.rows[0].invited_by;
-    await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
-      INVITE_BONUS,
-      inviter,
-    ]);
-    ctx.api
-      .sendMessage(inviter, `🎉 صديق دعوته أنجز أول مهمة، أخذت ${INVITE_BONUS} نقطة`)
-      .catch(() => {});
-  }
-
-  await ctx.answerCallbackQuery({ text: `+${task.reward} نقطة ✅` });
+  await ctx.answerCallbackQuery({ text: `+${r.reward} نقطة ✅` });
   await showTasks(ctx);
 });
 
 // ====== الرصيد ======
 async function showBalance(ctx) {
-  const { rows } = await pool.query("SELECT balance FROM users WHERE id = $1", [
-    ctx.from.id,
-  ]);
-  const pts = Number(rows[0].balance);
+  const pts = await getBalance(ctx.from.id);
   const usdt = (pts / POINTS_PER_USDT).toFixed(2);
   const kb = new InlineKeyboard()
     .text("💸 سحب", "withdraw")
@@ -264,10 +309,7 @@ bot.callbackQuery("invite", async (ctx) => {
 // ====== السحب ======
 bot.callbackQuery("withdraw", async (ctx) => {
   await ctx.answerCallbackQuery();
-  const { rows } = await pool.query("SELECT balance FROM users WHERE id = $1", [
-    ctx.from.id,
-  ]);
-  const pts = Number(rows[0].balance);
+  const pts = await getBalance(ctx.from.id);
   const minPts = MIN_WITHDRAW_USDT * POINTS_PER_USDT;
   if (pts < minPts) {
     return ctx.reply(
@@ -404,10 +446,69 @@ bot.on("message:text", async (ctx) => {
 
 bot.catch((err) => console.error("خطأ:", err.error));
 
-// سيرفر صغير جداً عشان الاستضافة المجانية تعتبر الخدمة شغالة
-http
-  .createServer((req, res) => res.end("OK"))
-  .listen(process.env.PORT || 3000);
+// ====== السيرفر: صفحة التطبيق المصغر + واجهة API ======
+function sendJson(res, status, obj) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(obj));
+}
+
+function readJson(req) {
+  return new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (c) => {
+      raw += c;
+      if (raw.length > 10000) req.destroy();
+    });
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(raw || "{}"));
+      } catch (e) {
+        resolve({});
+      }
+    });
+    req.on("error", () => resolve({}));
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const { pathname } = new URL(req.url, "http://localhost");
+
+    if (req.method === "GET" && (pathname === "/" || pathname === "/app")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(APP_HTML);
+    }
+
+    if (pathname.startsWith("/api/")) {
+      const user = verifyInitData(req.headers["x-init-data"], token);
+      if (!user) return sendJson(res, 401, { error: "unauthorized" });
+      await ensureUser(user);
+
+      if (req.method === "GET" && pathname === "/api/me") {
+        const balance = await getBalance(user.id);
+        return sendJson(res, 200, {
+          balance,
+          usdt: (balance / POINTS_PER_USDT).toFixed(2),
+        });
+      }
+      if (req.method === "GET" && pathname === "/api/tasks") {
+        return sendJson(res, 200, { tasks: await getOpenTasks(user.id) });
+      }
+      if (req.method === "POST" && pathname === "/api/check") {
+        const body = await readJson(req);
+        const r = await completeTask(user.id, Number(body.taskId));
+        if (r.ok) return sendJson(res, 200, { ok: true, reward: r.reward });
+        return sendJson(res, 200, { ok: false, message: TASK_MSG[r.code] });
+      }
+    }
+
+    sendJson(res, 404, { error: "not_found" });
+  } catch (e) {
+    console.error("server:", e);
+    sendJson(res, 500, { error: "server_error" });
+  }
+});
+server.listen(process.env.PORT || 3000);
 
 initDb()
   .then(() => {
