@@ -6,6 +6,8 @@
 <title>Earn USDT</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://w.tads.me/widget.js"></script>
+<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+<script src="https://inapp.telega.io/sdk/v1/sdk.js"></script>
 <style>
   :root {
     --bg: #0a0e13; --card: #121a22; --line: #1e2a35;
@@ -315,6 +317,8 @@ function renderMe(me) {
 
 async function loadMe() {
   renderMe(await api("/api/me"));
+  // نجهّز إعلان Telega من البداية حتى يكون جاهزاً عند أول ضغطة
+  try { getTelega(); } catch (e) {}
 }
 
 // ===== الإعلان (TADS) =====
@@ -326,46 +330,105 @@ function getAdController() {
     type: "fullscreen",
     debug: false,
     onShowReward: () => (adMode === "spin" ? onSpinAdWatched() : onAdWatched()),
-    onAdsNotFound: () => {
-      toast("لا يوجد إعلان الآن، حاول لاحقاً");
-      if (adMode === "spin") api("/api/spin/cancel", {}).catch(() => {});
-      busy = false;
-    },
+    onAdsNotFound: () => tryFallbackAd(),
   });
   return adController;
 }
 
+// ===== إعلان احتياطي (AdsGram) لو ما وجد TADS إعلاناً =====
+let adsgram = null;
+let fallbackRunning = false;
+let lastFallbackAt = 0;
+
+function getAdsgram() {
+  if (adsgram) return adsgram;
+  if (!currentMe || !currentMe.adsgramBlockId || !window.Adsgram) return null;
+  adsgram = window.Adsgram.init({ blockId: String(currentMe.adsgramBlockId), debug: false });
+  return adsgram;
+}
+
+let telega = null;
+function getTelega() {
+  if (telega) return telega;
+  if (!currentMe || !currentMe.telegaToken || !currentMe.telegaBlock) return null;
+  if (!(window.TelegaIn && window.TelegaIn.AdsController)) return null;
+  telega = window.TelegaIn.AdsController.create_miniapp({ token: currentMe.telegaToken });
+  return telega;
+}
+
+async function tryFallbackAd() {
+  // TADS قد يستدعي هذه الدالة مرتين (رد + خطأ)، فنمنع التكرار
+  if (fallbackRunning || Date.now() - lastFallbackAt < 4000) return;
+  fallbackRunning = true;
+  lastFallbackAt = Date.now();
+  let result = "none"; // none | watched (AdsGram) | telega | skipped
+  try {
+    const g = getAdsgram();
+    if (g) {
+      try {
+        const r = await g.show();
+        if (r && r.done) result = "watched";
+      } catch (e) {
+        // المستخدم تخطى الإعلان بنفسه (ليس خطأ)، فلا نعرض له إعلاناً ثانياً
+        if (e && e.error === false) result = "skipped";
+      }
+    }
+    if (result === "none") {
+      const t = getTelega();
+      if (t) {
+        try {
+          await Promise.resolve(t.ad_show({ adBlockUuid: currentMe.telegaBlock }));
+          result = "telega";
+        } catch (e) {
+          result = "none";
+        }
+      }
+    }
+  } finally {
+    fallbackRunning = false;
+  }
+  if (result === "watched") return adMode === "spin" ? onSpinAdWatched() : onAdWatched();
+  // Telega لا يخبرنا متى ينتهي الإعلان، فننتظر المكافأة مدة أطول
+  if (result === "telega") return adMode === "spin" ? onSpinAdWatched(60) : onAdWatched(60);
+  if (result === "none") toast("لا يوجد إعلان الآن، حاول لاحقاً");
+  if (adMode === "spin") api("/api/spin/cancel", {}).catch(() => {});
+  busy = false;
+}
+
 // السيرفر يضيف النقاط عبر Webhook من TADS، وهنا ننتظر ونحدّث الرصيد
-async function onAdWatched() {
+async function onAdWatched(maxSeconds = 12) {
   const before = currentMe ? currentMe.balance : 0;
   toast("جاري إضافة النقاط…");
-  for (let i = 0; i < 8; i++) {
+  const rounds = Math.ceil(maxSeconds / 1.5);
+  let rewarded = false;
+  for (let i = 0; i < rounds; i++) {
     await sleep(1500);
     try {
       await loadMe();
       if (currentMe.balance > before) {
         toast("+" + (currentMe.balance - before) + " نقطة ✅");
         haptic();
+        rewarded = true;
         break;
       }
     } catch (e) {}
   }
+  if (!rewarded) toast("لم تصل المكافأة بعد، حدّث الصفحة بعد قليل");
   busy = false;
 }
 
 $("adBtn").onclick = async () => {
   if (busy) return;
-  const c = getAdController();
-  if (!c) return toast("تعذر تحميل الإعلان، حاول لاحقاً");
   busy = true;
   adMode = "ad";
   api("/api/spin/cancel", {}).catch(() => {});
   releaseBusy(120000);
+  const c = getAdController();
+  if (!c) return tryFallbackAd();
   try {
     await c.showAd();
   } catch (e) {
-    toast("لا يوجد إعلان الآن، حاول لاحقاً");
-    busy = false;
+    tryFallbackAd();
   }
 };
 
@@ -416,8 +479,9 @@ function animateWheel(index) {
   $("wheel").style.transform = "rotate(" + wheelRot + "deg)";
 }
 
-async function claimAndSpin() {
-  for (let i = 0; i < 10; i++) {
+async function claimAndSpin(maxSeconds = 15) {
+  const rounds = Math.ceil(maxSeconds / 1.5);
+  for (let i = 0; i < rounds; i++) {
     try {
       const r = await api("/api/spin/claim", {});
       if (r.ok) {
@@ -436,9 +500,9 @@ async function claimAndSpin() {
   busy = false;
 }
 
-function onSpinAdWatched() {
+function onSpinAdWatched(maxSeconds = 15) {
   toast("جاري تجهيز الجائزة…");
-  claimAndSpin();
+  claimAndSpin(maxSeconds);
 }
 
 $("spinBtn").onclick = async () => {
@@ -453,20 +517,13 @@ $("spinBtn").onclick = async () => {
       return;
     }
     if (s.ready) return claimAndSpin(); // جائزة سابقة جاهزة بدون إعلان
-    const c = getAdController();
-    if (!c) {
-      api("/api/spin/cancel", {}).catch(() => {});
-      toast("تعذر تحميل الإعلان، حاول لاحقاً");
-      busy = false;
-      return;
-    }
     adMode = "spin";
+    const c = getAdController();
+    if (!c) return tryFallbackAd();
     try {
       await c.showAd();
     } catch (e) {
-      api("/api/spin/cancel", {}).catch(() => {});
-      toast("لا يوجد إعلان الآن، حاول لاحقاً");
-      busy = false;
+      tryFallbackAd();
     }
   } catch (e) {
     toast("حدث خطأ، حاول مرة ثانية");

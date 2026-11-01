@@ -19,6 +19,17 @@ const AD_WINDOW_HOURS = 6; // خلال كم ساعة
 const TADS_WIDGET_ID = process.env.TADS_WIDGET_ID || "12988";
 const TADS_SECRET = process.env.TADS_SECRET || ""; // مفتاح سري للـ Webhook
 
+// إعلان احتياطي (AdsGram): يظهر لو ما وجد TADS إعلاناً
+const ADSGRAM_BLOCK_ID = process.env.ADSGRAM_BLOCK_ID || "57148";
+const ADSGRAM_SECRET = process.env.ADSGRAM_SECRET || ""; // مفتاح سري لرابط Reward URL
+// AdsGram متوقف حتى يقبل Reward URL: لا تفعّله (ضع ADSGRAM_ENABLED=1) إلا بعد ما تتأكد أن المكافأة تصل
+const ADSGRAM_ENABLED = process.env.ADSGRAM_ENABLED === "1";
+
+// إعلان احتياطي ثالث (Telega.io)
+const TELEGA_TOKEN = process.env.TELEGA_TOKEN || "a90cc0f9-eb42-440b-8765-3ca397b735db";
+const TELEGA_BLOCK = process.env.TELEGA_BLOCK || "9cc798e8-e9c8-4dc5-b27f-37d422f60be9";
+const TELEGA_SECRET = process.env.TELEGA_SECRET || ""; // مفتاح سري لرابط Reward URL
+
 // العجلة اليومية: كل لفة تسبقها مشاهدة إعلان
 const WHEEL_SLICES = [2, 3, 5, 5, 8, 10, 15, 25]; // نقاط كل خانة
 const WHEEL_WEIGHTS = [30, 25, 15, 10, 8, 6, 4, 2]; // احتمال كل خانة (المتوسط ≈ 5 نقاط)
@@ -663,6 +674,26 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, await rewardAd(uid));
     }
 
+    // Reward URL من AdsGram: يرسل GET فيه userid بعد مشاهدة إعلان كامل
+    if (pathname === "/api/adsgram" && req.method === "GET") {
+      if (!ADSGRAM_SECRET || !safeEqual(url.searchParams.get("key") || "", ADSGRAM_SECRET)) {
+        return sendJson(res, 403, { error: "forbidden" });
+      }
+      const uid = Number(url.searchParams.get("userid"));
+      if (!uid) return sendJson(res, 400, { error: "bad_request" });
+      return sendJson(res, 200, await rewardAd(uid));
+    }
+
+    // Reward URL من Telega.io: يرسل GET فيه userid بعد مشاهدة الإعلان
+    if (pathname === "/api/telega" && req.method === "GET") {
+      if (!TELEGA_SECRET || !safeEqual(url.searchParams.get("key") || "", TELEGA_SECRET)) {
+        return sendJson(res, 403, { error: "forbidden" });
+      }
+      const uid = Number(url.searchParams.get("userid"));
+      if (!uid) return sendJson(res, 400, { error: "bad_request" });
+      return sendJson(res, 200, await rewardAd(uid));
+    }
+
     if (pathname.startsWith("/api/")) {
       const user = verifyInitData(req.headers["x-init-data"], token);
       if (!user) return sendJson(res, 401, { error: "unauthorized" });
@@ -676,6 +707,9 @@ const server = http.createServer(async (req, res) => {
           usdt: (balance / POINTS_PER_USDT).toFixed(2),
           adsEnabled: Boolean(TADS_SECRET),
           adWidgetId: Number(TADS_WIDGET_ID),
+          adsgramBlockId: ADSGRAM_ENABLED && ADSGRAM_SECRET ? ADSGRAM_BLOCK_ID : "",
+          telegaToken: TELEGA_SECRET ? TELEGA_TOKEN : "",
+          telegaBlock: TELEGA_SECRET ? TELEGA_BLOCK : "",
           adReward: AD_REWARD,
           adLimit: AD_LIMIT,
           adHours: AD_WINDOW_HOURS,
