@@ -124,6 +124,7 @@
     </div>
     <button id="adBtn" class="primary" disabled>شاهد</button>
   </div>
+  <div class="hint" id="adDebug" style="margin:-2px 6px 8px"></div>
 
   <h2>هدية اليوم</h2>
   <div class="card row">
@@ -212,6 +213,13 @@ let currentMe = null;
 let adController = null;
 let adMode = "ad"; // "ad" إعلان عادي، "spin" إعلان قبل لفة العجلة
 let busy = false;
+const adLog = [];
+function logAd(msg) {
+  adLog.push(msg);
+  if (adLog.length > 6) adLog.shift();
+  const el = $("adDebug");
+  if (el) el.textContent = "آخر محاولة: " + adLog.join(" · ");
+}
 let wheelBuilt = false;
 let wheelRot = 0;
 
@@ -329,8 +337,14 @@ function getAdController() {
     widgetId: currentMe.adWidgetId,
     type: "fullscreen",
     debug: false,
-    onShowReward: () => (adMode === "spin" ? onSpinAdWatched() : onAdWatched()),
-    onAdsNotFound: () => tryFallbackAd(),
+    onShowReward: () => {
+      logAd("TADS ✓ عرض إعلان");
+      return adMode === "spin" ? onSpinAdWatched() : onAdWatched();
+    },
+    onAdsNotFound: () => {
+      logAd("TADS: لا يوجد إعلان");
+      tryFallbackAd();
+    },
   });
   return adController;
 }
@@ -374,14 +388,25 @@ async function tryFallbackAd() {
       }
     }
     if (result === "none") {
-      const t = getTelega();
+      let t = null;
+      try {
+        t = getTelega();
+      } catch (e) {
+        logAd("Telega: خطأ تجهيز " + ((e && e.message) || ""));
+      }
       if (t) {
         try {
           await Promise.resolve(t.ad_show({ adBlockUuid: currentMe.telegaBlock }));
+          logAd("Telega: طلبنا إعلاناً");
           result = "telega";
         } catch (e) {
+          logAd("Telega: خطأ " + ((e && e.message) || ""));
           result = "none";
         }
+      } else if (!currentMe || !currentMe.telegaToken) {
+        logAd("Telega: غير مفعّل في السيرفر");
+      } else {
+        logAd("Telega: السكربت لم يتحمل");
       }
     }
   } finally {
@@ -413,7 +438,10 @@ async function onAdWatched(maxSeconds = 12) {
       }
     } catch (e) {}
   }
-  if (!rewarded) toast("لم تصل المكافأة بعد، حدّث الصفحة بعد قليل");
+  if (!rewarded) {
+    logAd("المكافأة لم تصل للسيرفر");
+    toast("لم تصل المكافأة بعد، حدّث الصفحة بعد قليل");
+  }
   busy = false;
 }
 
@@ -421,13 +449,18 @@ $("adBtn").onclick = async () => {
   if (busy) return;
   busy = true;
   adMode = "ad";
+  adLog.length = 0;
   api("/api/spin/cancel", {}).catch(() => {});
   releaseBusy(120000);
   const c = getAdController();
-  if (!c) return tryFallbackAd();
+  if (!c) {
+    logAd("TADS: غير جاهز");
+    return tryFallbackAd();
+  }
   try {
     await c.showAd();
   } catch (e) {
+    logAd("TADS: خطأ " + ((e && e.message) || ""));
     tryFallbackAd();
   }
 };
@@ -518,11 +551,16 @@ $("spinBtn").onclick = async () => {
     }
     if (s.ready) return claimAndSpin(); // جائزة سابقة جاهزة بدون إعلان
     adMode = "spin";
+    adLog.length = 0;
     const c = getAdController();
-    if (!c) return tryFallbackAd();
+    if (!c) {
+      logAd("TADS: غير جاهز");
+      return tryFallbackAd();
+    }
     try {
       await c.showAd();
     } catch (e) {
+      logAd("TADS: خطأ " + ((e && e.message) || ""));
       tryFallbackAd();
     }
   } catch (e) {
