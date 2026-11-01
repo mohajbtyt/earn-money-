@@ -327,6 +327,7 @@ async function loadMe() {
   renderMe(await api("/api/me"));
   // نجهّز إعلان Telega من البداية حتى يكون جاهزاً عند أول ضغطة
   try { getTelega(); } catch (e) {}
+  loadGiga();
 }
 
 // ===== الإعلان (TADS) =====
@@ -370,6 +371,39 @@ function getTelega() {
   return telega;
 }
 
+// ===== إعلان احتياطي رابع (GigaPub) =====
+let gigaLoading = false;
+function loadGiga() {
+  if (gigaLoading || window.showGiga || !currentMe || !currentMe.gigapubId) return;
+  gigaLoading = true;
+  const s = document.createElement("script");
+  s.src = "https://ad.gigapub.tech/script?id=" + encodeURIComponent(currentMe.gigapubId);
+  s.async = true;
+  s.onerror = () => { gigaLoading = false; };
+  document.head.append(s);
+}
+
+// GigaPub يخبر الصفحة فقط أن الإعلان انتهى، فنطلب من السيرفر المكافأة (بحدود صارمة)
+async function gigaClaim() {
+  try {
+    const r = await api("/api/giga/claim", {});
+    if (r.ok && r.spin) return onSpinAdWatched();
+    if (r.ok) {
+      toast("+" + r.reward + " نقطة ✅");
+      haptic();
+      await loadMe().catch(() => {});
+      busy = false;
+      return;
+    }
+    logAd("GigaPub: " + (r.message || "رفض السيرفر"));
+    toast(r.message || "تعذر إضافة المكافأة");
+  } catch (e) {
+    toast("حدث خطأ، حاول مرة ثانية");
+  }
+  if (adMode === "spin") api("/api/spin/cancel", {}).catch(() => {});
+  busy = false;
+}
+
 async function tryFallbackAd() {
   // TADS قد يستدعي هذه الدالة مرتين (رد + خطأ)، فنمنع التكرار
   if (fallbackRunning || Date.now() - lastFallbackAt < 4000) return;
@@ -409,9 +443,23 @@ async function tryFallbackAd() {
         logAd("Telega: السكربت لم يتحمل");
       }
     }
+    if (result === "none" && currentMe && currentMe.gigapubId) {
+      if (typeof window.showGiga === "function") {
+        try {
+          await window.showGiga();
+          logAd("GigaPub ✓ شوهد");
+          result = "giga";
+        } catch (e) {
+          logAd("GigaPub: " + String((e && e.message) || e || "لا يوجد إعلان"));
+        }
+      } else {
+        logAd("GigaPub: السكربت لم يتحمل");
+      }
+    }
   } finally {
     fallbackRunning = false;
   }
+  if (result === "giga") return gigaClaim();
   if (result === "watched") return adMode === "spin" ? onSpinAdWatched() : onAdWatched();
   // Telega لا يخبرنا متى ينتهي الإعلان، فننتظر المكافأة مدة أطول
   if (result === "telega") return adMode === "spin" ? onSpinAdWatched(60) : onAdWatched(60);

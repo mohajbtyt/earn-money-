@@ -30,6 +30,12 @@ const TELEGA_TOKEN = process.env.TELEGA_TOKEN || "a90cc0f9-eb42-440b-8765-3ca397
 const TELEGA_BLOCK = process.env.TELEGA_BLOCK || "9cc798e8-e9c8-4dc5-b27f-37d422f60be9";
 const TELEGA_SECRET = process.env.TELEGA_SECRET || ""; // مفتاح سري لرابط Reward URL
 
+// إعلان احتياطي رابع (GigaPub): لا يؤكد المكافأة من السيرفر، فالمكافأة صغيرة والحدود صارمة
+const GIGAPUB_ID = process.env.GIGAPUB_PROJECT_ID || ""; // يبقى متوقفاً حتى تضيفه في Render
+const GIGA_REWARD = 2; // نقاط كل إعلان
+const GIGA_LIMIT = 5; // أقصى عدد إعلانات لكل AD_WINDOW_HOURS
+const GIGA_MIN_GAP_SEC = 25; // أقل فاصل بين إعلانين
+
 // العجلة اليومية: كل لفة تسبقها مشاهدة إعلان
 const WHEEL_SLICES = [2, 3, 5, 5, 8, 10, 15, 25]; // نقاط كل خانة
 const WHEEL_WEIGHTS = [30, 25, 15, 10, 8, 6, 4, 2]; // احتمال كل خانة (المتوسط ≈ 5 نقاط)
@@ -100,6 +106,14 @@ async function initDb() {
   )`);
   await pool.query(
     "CREATE INDEX IF NOT EXISTS ad_views_user_time ON ad_views (user_id, created_at)"
+  );
+  await pool.query(`CREATE TABLE IF NOT EXISTS giga_views (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`);
+  await pool.query(
+    "CREATE INDEX IF NOT EXISTS giga_views_user_time ON giga_views (user_id, created_at)"
   );
   await pool.query(`CREATE TABLE IF NOT EXISTS spins (
     id SERIAL PRIMARY KEY,
@@ -231,6 +245,61 @@ async function rewardAd(userId) {
     userId,
   ]);
   return { ok: true };
+}
+
+// مكافأة إعلان GigaPub (تأكيد من الصفحة فقط، لذلك نحدّ العدد والتكرار)
+async function rewardGiga(userId) {
+  if (!GIGAPUB_ID) return { ok: false, message: "غير متاح الآن" };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const u = await client.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", [userId]);
+    if (!u.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "مستخدم غير معروف" };
+    }
+    // لفة عجلة بانتظار الإعلان: هذا الإعلان يفتحها بدل المكافأة العادية
+    const slice = pickSlice();
+    const sp = await client.query(
+      `UPDATE spins SET status = 'ready', slice = $2, prize = $3
+       WHERE id = (SELECT id FROM spins WHERE user_id = $1 AND status = 'pending'
+                   AND created_at > now() - make_interval(mins => $4)
+                   ORDER BY id DESC LIMIT 1)
+       RETURNING id`,
+      [userId, slice, WHEEL_SLICES[slice], SPIN_WAIT_MIN]
+    );
+    if (sp.rowCount) {
+      await client.query("COMMIT");
+      return { ok: true, spin: true };
+    }
+    const g = await client.query(
+      `SELECT COUNT(*) AS n, EXTRACT(EPOCH FROM (now() - MAX(created_at))) AS since
+       FROM giga_views WHERE user_id = $1 AND created_at > now() - make_interval(hours => $2)`,
+      [userId, AD_WINDOW_HOURS]
+    );
+    const n = Number(g.rows[0].n);
+    const since = g.rows[0].since === null ? null : Number(g.rows[0].since);
+    if (n >= GIGA_LIMIT) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "انتهت إعلاناتك الآن، ارجع لاحقاً" };
+    }
+    if (since !== null && since < GIGA_MIN_GAP_SEC) {
+      await client.query("ROLLBACK");
+      return { ok: false, message: "انتظر قليلاً قبل الإعلان التالي" };
+    }
+    await client.query("INSERT INTO giga_views (user_id) VALUES ($1)", [userId]);
+    await client.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
+      GIGA_REWARD,
+      userId,
+    ]);
+    await client.query("COMMIT");
+    return { ok: true, reward: GIGA_REWARD };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // BEGIN wheel
@@ -710,6 +779,7 @@ const server = http.createServer(async (req, res) => {
           adsgramBlockId: ADSGRAM_ENABLED && ADSGRAM_SECRET ? ADSGRAM_BLOCK_ID : "",
           telegaToken: TELEGA_SECRET ? TELEGA_TOKEN : "",
           telegaBlock: TELEGA_SECRET ? TELEGA_BLOCK : "",
+          gigapubId: GIGAPUB_ID,
           adReward: AD_REWARD,
           adLimit: AD_LIMIT,
           adHours: AD_WINDOW_HOURS,
@@ -766,6 +836,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "POST" && pathname === "/api/spin/claim") {
         const c = await claimSpin(user.id);
         return sendJson(res, 200, c ? { ok: true, slice: c.slice, prize: c.prize } : { ok: false });
+      }
+      if (req.method === "POST" && pathname === "/api/giga/claim") {
+        return sendJson(res, 200, await rewardGiga(user.id));
       }
     }
 
