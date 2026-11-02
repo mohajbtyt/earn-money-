@@ -124,7 +124,8 @@
     </div>
     <button id="adBtn" class="primary" disabled>شاهد</button>
   </div>
-  <div class="hint" id="adDebug" style="margin:-2px 6px 8px"></div>
+  <div class="hint" style="margin:6px 6px 0">شاهد الإعلان حتى ينتهي العداد ثم اضغط X. لو ضغطت على الإعلان قبل انتهاء الوقت لن تُحسب المشاهدة.</div>
+  <div class="hint" id="adDebug" style="margin:2px 6px 8px"></div>
 
   <h2>هدية اليوم</h2>
   <div class="card row">
@@ -155,6 +156,17 @@
 
 <!-- المهام -->
 <section id="tab-tasks" class="tab">
+  <div id="linkCard" style="display:none">
+    <h2>مهمة رابط</h2>
+    <div class="card row">
+      <div class="info">
+        <div class="title">🔗 افتح الرابط وأكمل خطواته</div>
+        <div class="sub" id="linkSub">…</div>
+      </div>
+      <button id="linkBtn" class="primary" disabled>ابدأ</button>
+    </div>
+    <div class="hint" style="margin:6px 6px 14px">قد تظهر في صفحة الموقع إعلانات. لا تحمّل أي ملفات ولا تدخل أي بيانات شخصية.</div>
+  </div>
   <h2>المهام</h2>
   <div id="tasks"><div class="empty">جاري التحميل…</div></div>
 </section>
@@ -271,7 +283,7 @@ function renderMe(me) {
     $("adSub").textContent = "غير متاح الآن";
     $("adBtn").disabled = true;
   } else if (me.adsLeft > 0) {
-    $("adSub").textContent = "+" + me.adReward + " نقطة للإعلان · المتبقي " + me.adsLeft + " من " + me.adLimit + " كل " + me.adHours + " ساعات";
+    $("adSub").textContent = "حتى +" + me.adReward + " نقطة للإعلان · المتبقي " + me.adsLeft + " من " + me.adLimit + " كل " + me.adHours + " ساعات";
     $("adBtn").disabled = false;
   } else {
     $("adSub").textContent = "انتهت إعلاناتك الآن، ارجع بعد " + me.adHours + " ساعات";
@@ -314,6 +326,16 @@ function renderMe(me) {
       o.textContent = n;
       $("wdNet").append(o);
     });
+  }
+
+  // مهمة الرابط
+  $("linkCard").style.display = me.linkEnabled ? "block" : "none";
+  if (me.linkEnabled) {
+    $("linkSub").textContent =
+      me.linksLeft > 0
+        ? "+" + me.linkReward + " نقطة · المتبقي اليوم " + me.linksLeft
+        : "انتهت روابط اليوم، ارجع بكرة";
+    $("linkBtn").disabled = me.linksLeft <= 0;
   }
 
   // الدعوة
@@ -498,6 +520,7 @@ $("adBtn").onclick = async () => {
   busy = true;
   adMode = "ad";
   adLog.length = 0;
+  toast("انتظر انتهاء العداد ثم اضغط X، ولا تضغط على الإعلان قبلها");
   api("/api/spin/cancel", {}).catch(() => {});
   releaseBusy(120000);
   const c = getAdController();
@@ -600,6 +623,7 @@ $("spinBtn").onclick = async () => {
     if (s.ready) return claimAndSpin(); // جائزة سابقة جاهزة بدون إعلان
     adMode = "spin";
     adLog.length = 0;
+    toast("انتظر انتهاء العداد ثم اضغط X، ولا تضغط على الإعلان قبلها");
     const c = getAdController();
     if (!c) {
       logAd("TADS: غير جاهز");
@@ -615,6 +639,24 @@ $("spinBtn").onclick = async () => {
     toast("حدث خطأ، حاول مرة ثانية");
     busy = false;
   }
+};
+
+// ===== مهمة الرابط =====
+$("linkBtn").onclick = async () => {
+  $("linkBtn").disabled = true;
+  try {
+    const r = await api("/api/link/start", {});
+    if (r.ok) {
+      toast("أكمل خطوات الموقع حتى النهاية لتُضاف النقاط");
+      if (tg && tg.openLink) tg.openLink(r.url);
+      else window.open(r.url, "_blank");
+    } else {
+      toast(r.message || "تعذر إنشاء الرابط");
+    }
+  } catch (e) {
+    toast("حدث خطأ، حاول مرة ثانية");
+  }
+  await loadMe().catch(() => {});
 };
 
 // ===== السحب =====
@@ -721,6 +763,11 @@ async function loadTasks() {
   }
   tasks.forEach((t) => box.append(taskCard(t)));
 }
+
+// نحدّث الرصيد لما يرجع المستخدم للتطبيق (مثلاً بعد مهمة رابط)
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && initData) loadMe().catch(() => {});
+});
 
 // ===== البداية =====
 if (!initData) {

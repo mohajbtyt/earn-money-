@@ -36,6 +36,13 @@ const GIGA_REWARD = 2; // نقاط كل إعلان
 const GIGA_LIMIT = 5; // أقصى عدد إعلانات لكل AD_WINDOW_HOURS
 const GIGA_MIN_GAP_SEC = 25; // أقل فاصل بين إعلانين
 
+// مهام الروابط (Nitro Link): تبقى متوقفة حتى تضيف NITRO_API_KEY في Render
+const NITRO_API_KEY = process.env.NITRO_API_KEY || "";
+const LINK_REWARD = 10; // نقاط كل رابط
+const LINK_DAILY_LIMIT = 3; // أقصى عدد روابط لكل 24 ساعة
+const LINK_MIN_SECONDS = 15; // أقل وقت بين فتح الرابط والوصول لنهايته
+const LINK_EXPIRE_MIN = 30; // صلاحية الرابط بالدقائق
+
 // العجلة اليومية: كل لفة تسبقها مشاهدة إعلان
 const WHEEL_SLICES = [2, 3, 5, 5, 8, 10, 15, 25]; // نقاط كل خانة
 const WHEEL_WEIGHTS = [30, 25, 15, 10, 8, 6, 4, 2]; // احتمال كل خانة (المتوسط ≈ 5 نقاط)
@@ -114,6 +121,18 @@ async function initDb() {
   )`);
   await pool.query(
     "CREATE INDEX IF NOT EXISTS giga_views_user_time ON giga_views (user_id, created_at)"
+  );
+  await pool.query(`CREATE TABLE IF NOT EXISTS link_tasks (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    short_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    done_at TIMESTAMPTZ
+  )`);
+  await pool.query(
+    "CREATE INDEX IF NOT EXISTS link_tasks_user ON link_tasks (user_id, status, created_at)"
   );
   await pool.query(`CREATE TABLE IF NOT EXISTS spins (
     id SERIAL PRIMARY KEY,
@@ -300,6 +319,119 @@ async function rewardGiga(userId) {
   } finally {
     client.release();
   }
+}
+
+// ===== مهام الروابط (Nitro Link) =====
+// BEGIN link
+function parseShortUrl(text) {
+  try {
+    const j = JSON.parse(text);
+    if (j && j.status === "success" && typeof j.shortenedUrl === "string") {
+      const u = new URL(j.shortenedUrl);
+      if (u.protocol === "https:" || u.protocol === "http:") return u.href;
+    }
+  } catch (e) {}
+  return null;
+}
+// END link
+
+async function linksDone(userId) {
+  const r = await pool.query(
+    "SELECT COUNT(*) FROM link_tasks WHERE user_id = $1 AND status = 'done' AND done_at > now() - interval '24 hours'",
+    [userId]
+  );
+  return Number(r.rows[0].count);
+}
+
+async function shortenWithNitro(destination) {
+  const api =
+    "https://nitro-link.com/api?api=" +
+    encodeURIComponent(NITRO_API_KEY) +
+    "&url=" +
+    encodeURIComponent(destination);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(api, { signal: ctrl.signal });
+    return parseShortUrl(await res.text());
+  } catch (e) {
+    console.error("nitro:", e.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startLinkTask(userId) {
+  if (!NITRO_API_KEY) return { ok: false, message: "غير متاح الآن" };
+  if ((await linksDone(userId)) >= LINK_DAILY_LIMIT) {
+    return { ok: false, message: "انتهت روابط اليوم، ارجع بكرة" };
+  }
+  // رابط سابق لم يكتمل: نعيد نفس الرابط بدل ما ننشئ روابط كثيرة
+  const old = await pool.query(
+    "SELECT short_url FROM link_tasks WHERE user_id = $1 AND status = 'created' AND created_at > now() - make_interval(mins => $2) ORDER BY id DESC LIMIT 1",
+    [userId, LINK_EXPIRE_MIN]
+  );
+  if (old.rowCount) return { ok: true, url: old.rows[0].short_url };
+  const token = crypto.randomBytes(16).toString("hex");
+  const short = await shortenWithNitro(WEBAPP_URL + "/lk/" + token);
+  if (!short) return { ok: false, message: "تعذر إنشاء الرابط الآن، حاول لاحقاً" };
+  await pool.query("INSERT INTO link_tasks (user_id, token, short_url) VALUES ($1, $2, $3)", [
+    userId,
+    token,
+    short,
+  ]);
+  return { ok: true, url: short };
+}
+
+// يُستدعى لما يصل المستخدم لنهاية رابط الاختصار
+async function finishLinkTask(token) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const r = await client.query(
+      "SELECT id, user_id, created_at, status FROM link_tasks WHERE token = $1 FOR UPDATE",
+      [token]
+    );
+    if (!r.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false, code: "invalid" };
+    }
+    const t = r.rows[0];
+    const age = (Date.now() - new Date(t.created_at).getTime()) / 1000;
+    let code = null;
+    if (t.status === "done") code = "done";
+    else if (age > LINK_EXPIRE_MIN * 60) code = "expired";
+    else if (age < LINK_MIN_SECONDS) code = "fast";
+    else {
+      const c = await client.query(
+        "SELECT COUNT(*) FROM link_tasks WHERE user_id = $1 AND status = 'done' AND done_at > now() - interval '24 hours'",
+        [t.user_id]
+      );
+      if (Number(c.rows[0].count) >= LINK_DAILY_LIMIT) code = "limit";
+    }
+    if (code) {
+      await client.query("ROLLBACK");
+      return { ok: false, code };
+    }
+    await client.query("UPDATE link_tasks SET status = 'done', done_at = now() WHERE id = $1", [t.id]);
+    await client.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [
+      LINK_REWARD,
+      t.user_id,
+    ]);
+    await client.query("COMMIT");
+    return { ok: true, reward: LINK_REWARD };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+function linkPage(title, message, ok) {
+  const botName = (bot.botInfo && bot.botInfo.username) || "earnusdt18_bot";
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0e13;color:#e8eef4;font-family:system-ui,sans-serif;padding:20px;text-align:center}.c{max-width:360px}h1{font-size:22px;color:${ok ? "#19d37a" : "#ffb020"}}p{color:#8a9aa8;line-height:1.7}a{display:inline-block;margin-top:14px;background:#19d37a;color:#04170d;font-weight:700;padding:12px 22px;border-radius:12px;text-decoration:none}</style></head><body><div class="c"><h1>${title}</h1><p>${message}</p><a href="https://t.me/${botName}/app">العودة للتطبيق</a></div></body></html>`;
 }
 
 // BEGIN wheel
@@ -729,6 +861,23 @@ const server = http.createServer(async (req, res) => {
       return res.end(APP_HTML);
     }
 
+    // نهاية رابط الاختصار: هنا تُضاف نقاط مهمة الرابط
+    const lk = pathname.match(/^\/lk\/([a-f0-9]{32})$/);
+    if (lk && req.method === "GET") {
+      const r = await finishLinkTask(lk[1]);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      if (r.ok) return res.end(linkPage("تم ✅", "أضفنا لك " + r.reward + " نقطة.", true));
+      const msg =
+        {
+          invalid: "الرابط غير صحيح.",
+          done: "أخذت نقاط هذا الرابط من قبل.",
+          expired: "انتهت صلاحية الرابط، ارجع للتطبيق وابدأ من جديد.",
+          limit: "انتهت روابط اليوم، ارجع بكرة.",
+          fast: "وصلت بسرعة كبيرة. أكمل خطوات الموقع حتى النهاية، وإن أكملتها فحدّث هذه الصفحة بعد 15 ثانية.",
+        }[r.code] || "حدث خطأ.";
+      return res.end(linkPage("لم تُضف النقاط", msg, false));
+    }
+
     // Webhook من TADS: يُرسل telegram_id و widget_id بعد مشاهدة الإعلان
     if (pathname === "/api/tads" && (req.method === "POST" || req.method === "GET")) {
       if (!TADS_SECRET || !safeEqual(url.searchParams.get("key") || "", TADS_SECRET)) {
@@ -780,6 +929,9 @@ const server = http.createServer(async (req, res) => {
           telegaToken: TELEGA_SECRET ? TELEGA_TOKEN : "",
           telegaBlock: TELEGA_SECRET ? TELEGA_BLOCK : "",
           gigapubId: GIGAPUB_ID,
+          linkEnabled: Boolean(NITRO_API_KEY),
+          linkReward: LINK_REWARD,
+          linksLeft: NITRO_API_KEY ? Math.max(0, LINK_DAILY_LIMIT - (await linksDone(user.id))) : 0,
           adReward: AD_REWARD,
           adLimit: AD_LIMIT,
           adHours: AD_WINDOW_HOURS,
@@ -839,6 +991,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === "POST" && pathname === "/api/giga/claim") {
         return sendJson(res, 200, await rewardGiga(user.id));
+      }
+      if (req.method === "POST" && pathname === "/api/link/start") {
+        return sendJson(res, 200, await startLinkTask(user.id));
       }
     }
 
