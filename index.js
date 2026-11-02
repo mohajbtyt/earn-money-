@@ -37,7 +37,7 @@ const GIGA_LIMIT = 5; // أقصى عدد إعلانات لكل AD_WINDOW_HOURS
 const GIGA_MIN_GAP_SEC = 25; // أقل فاصل بين إعلانين
 
 // مهام الروابط (Nitro Link): تبقى متوقفة حتى تضيف NITRO_API_KEY في Render
-const NITRO_API_KEY = process.env.NITRO_API_KEY || "";
+const NITRO_API_KEY = (process.env.NITRO_API_KEY || "").trim().replace(/^["']|["']$/g, "");
 const LINK_REWARD = 10; // نقاط كل رابط
 const LINK_DAILY_LIMIT = 3; // أقصى عدد روابط لكل 24 ساعة
 const LINK_MIN_SECONDS = 15; // أقل وقت بين فتح الرابط والوصول لنهايته
@@ -350,13 +350,21 @@ async function shortenWithNitro(destination) {
     "&url=" +
     encodeURIComponent(destination);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    const res = await fetch(api, { signal: ctrl.signal });
-    return parseShortUrl(await res.text());
+    const res = await fetch(api, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; EarnBot/1.0)", Accept: "application/json" },
+    });
+    const text = await res.text();
+    const url = parseShortUrl(text);
+    if (url) return { url };
+    const detail = "HTTP " + res.status + " " + text.replace(/\s+/g, " ").slice(0, 120);
+    console.error("nitro response:", detail);
+    return { error: detail };
   } catch (e) {
     console.error("nitro:", e.message);
-    return null;
+    return { error: e.name === "AbortError" ? "انتهت مهلة الاتصال" : e.message };
   } finally {
     clearTimeout(timer);
   }
@@ -374,14 +382,20 @@ async function startLinkTask(userId) {
   );
   if (old.rowCount) return { ok: true, url: old.rows[0].short_url };
   const token = crypto.randomBytes(16).toString("hex");
-  const short = await shortenWithNitro(WEBAPP_URL + "/lk/" + token);
-  if (!short) return { ok: false, message: "تعذر إنشاء الرابط الآن، حاول لاحقاً" };
+  const made = await shortenWithNitro(WEBAPP_URL + "/lk/" + token);
+  if (!made.url) {
+    // الأدمن فقط يشوف سبب الفشل الحقيقي، والمستخدم يشوف رسالة عامة
+    return {
+      ok: false,
+      message: userId === ADMIN_ID ? "Nitro: " + made.error : "تعذر إنشاء الرابط الآن، حاول لاحقاً",
+    };
+  }
   await pool.query("INSERT INTO link_tasks (user_id, token, short_url) VALUES ($1, $2, $3)", [
     userId,
     token,
-    short,
+    made.url,
   ]);
-  return { ok: true, url: short };
+  return { ok: true, url: made.url };
 }
 
 // يُستدعى لما يصل المستخدم لنهاية رابط الاختصار
